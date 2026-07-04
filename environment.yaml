@@ -13,6 +13,7 @@ dependencies:
   - bioconda::bioconductor-biostrings=2.78.0
   - bioconda::hmmer=3.4
   - bioconda::samtools=1.22
+  - bioconda::bwa-mem2=2.3
   - pip:
       - et_xmlfile==2.0.0
       - numpy==2.2.4
