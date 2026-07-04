@@ -1,3 +1,4 @@
+import argparse
 import concurrent.futures
 
 import pysam
@@ -466,30 +467,31 @@ class CommandLineManager:
 by Jeremy Deuel <jeremy.deuel@usz.ch>, June 2024
 
 """
-    usage = """Usage:
-python isa_hmmer.py [bam] [output] [threads] [hmm] [chunksize]
-bam:        Path to bam file. Mandatory
-output:     Path to output (tsv) file. Mandatory. If the file already exists, it will be overwritten
-threads:    Number of threads to use. Optional, will be set to the number of CPUs available if not set
-hmm:        Path to the hmm file. Optional, will be set to resources/all_iapltr.hmm if not set.
-chunksize: Number of records to be merged together into a chunk for multiprocessing. Optional, weil be set to 1000 if not set.
-"""
 
     def __init__(self):
 
         print(CommandLineManager.title)
-        if len(sys.argv) < 3:
-            print(CommandLineManager.usage)
-            exit(0)
-        self.bam = sys.argv[1]
-        self.output = sys.argv[2]
-        self.threads = int(sys.argv[3]) if len(sys.argv) > 3 else multiprocessing.cpu_count()
+        parser = argparse.ArgumentParser(prog="isa_hmmer2.py")
+        parser.add_argument("--bam", required=True, help="Path to bam file. Mandatory")
+        parser.add_argument("--output", required=True,
+                             help="Path to output (tsv) file. Mandatory. If the file already exists, it will be overwritten")
+        parser.add_argument("--threads", type=int, default=None,
+                             help="Number of threads to use. Optional, will be set to the number of CPUs available if not set")
+        parser.add_argument("--hmm", default="resources/iap.hmm",
+                             help="Path to the hmm file. Optional, will be set to resources/iap.hmm if not set.")
+        parser.add_argument("--chunksize", type=int, default=100,
+                             help="Number of records to be merged together into a chunk for multiprocessing. Optional, will be set to 100 if not set.")
+        args = parser.parse_args()
+
+        self.bam = args.bam
+        self.output = args.output
+        self.threads = args.threads if args.threads is not None else multiprocessing.cpu_count()
         self.cores = self.threads
         # divide threads by number of subthreads
         self.subthreads = 1
         self.threads = max(1, math.floor(self.threads / self.subthreads) - 1)
-        self.hmmfile = "resources/iap.hmm"
-        self.chunksize = int(sys.argv[5]) if len(sys.argv) > 5 else 100
+        self.hmmfile = args.hmm
+        self.chunksize = args.chunksize
         self.chunksleep = 10  # number of seconds to sleep if chunkbuffer is full
         self.chunkbuffer = math.ceil(
             500 / self.chunksize * self.chunksleep * self.subthreads * self.threads)  # max number of unprocessed chunks allowed
@@ -534,9 +536,6 @@ Subprocesses    {self.subthreads} (fixed value, number of threads per subprocess
 if __name__ == "__main__":
     t = time.time()
     clm = CommandLineManager()
-    # arg 1: path to input bam file
-    # arg 2: path to output tsv file
-    # arg 3: number of processes
     samfile = pysam.AlignmentFile(clm.bam, "rb")
     output = open(clm.output, "w")
     output.write(ReportedBreakpoint.tsvtitle())
