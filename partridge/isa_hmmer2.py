@@ -22,92 +22,101 @@ import math
 # invert: start = length-end, end = length-start => start = 3, end = 7
 
 # Flags indicating a model end
-MIN_CLIPPED_BASES = 24 #must have MORE than this number of clipped bases to be submitted.
+MIN_CLIPPED_BASES = (
+    24  # must have MORE than this number of clipped bases to be submitted.
+)
 SIDE_NONE = 2
 SIDE_LEFT = 0
 SIDE_RIGHT = 1
-MAPQ_CUTOFF = 40 # do not look at alignments with MAPQ smaller than this
+MAPQ_CUTOFF = 40  # do not look at alignments with MAPQ smaller than this
 
 DEBUG = [
-    ("chr1",116518567),
-    ("chr6",8573744),
-    ("chr6",83190171),
-    ("chr13",93389886),
-    ("chr14",99124836),
+    ("chr1", 116518567),
+    ("chr6", 8573744),
+    ("chr6", 83190171),
+    ("chr13", 93389886),
+    ("chr14", 99124836),
 ]
 DEBUG = None
+
+
 class ReportedBreakpoint:
     """
     Class to store the final output and to format the output text file
     """
+
     record = {
-        'rname': 'NA', #name of the read, may include the barcode
-        'barcode': 'NA', #barcode. If none are present, takes the first 9 bases of the read.
-        'seqname': 'NA', #seqname of the alignment
-        'pair_read': 'NA', #number of the read
-        'strand': '*', #strand of the alignment
-        'breakpoint': 'NA', #breakpoint, thus last or first base of the alignment outside the LTR.
-        'ltr.end': 'NA', #end of the ltr, 5' or 3', F or R
-        'ltr.len': 'NA', # length of the LTR, max the length of the HMM, thus 25bp
-        'ltr.score': 'NA', #bit score of the LTR
-        'aln.len': 'NA', #length of the alignment, excluding soft clipped bases (which are the LTR)
-        'bp_delta': 'NA', #number of basepaires between the border of the LTR and the border of the alignment
-        'mapq': 'NA', #mapping quality of the alignment
-        'ltr.model.border': 'NA', #how many bases of the model end were not matched? Should be 0 for a exactly adjacent match.
+        "rname": "NA",  # name of the read, may include the barcode
+        "barcode": "NA",  # barcode. If none are present, takes the first 9 bases of the read.
+        "seqname": "NA",  # seqname of the alignment
+        "pair_read": "NA",  # number of the read
+        "strand": "*",  # strand of the alignment
+        "breakpoint": "NA",  # breakpoint, thus last or first base of the alignment outside the LTR.
+        "ltr.end": "NA",  # end of the ltr, 5' or 3', F or R
+        "ltr.len": "NA",  # length of the LTR, max the length of the HMM, thus 25bp
+        "ltr.score": "NA",  # bit score of the LTR
+        "aln.len": "NA",  # length of the alignment, excluding soft clipped bases (which are the LTR)
+        "bp_delta": "NA",  # number of basepaires between the border of the LTR and the border of the alignment
+        "mapq": "NA",  # mapping quality of the alignment
+        "ltr.model.border": "NA",  # how many bases of the model end were not matched? Should be 0 for a exactly adjacent match.
     }
 
-    def __init__(self, hmmer: 'hmmerHit'):
+    def __init__(self, hmmer: "hmmerHit"):
 
-        if not hmmer: return
-        self.record['seqname'] = hmmer.seqname
-        self.record['pair_read'] = "1" if hmmer.is_read1 else "2"
-        self.record['barcode'] = hmmer.barcode
-        self.record['strand'] = hmmer.strand
-        self.record['rname'] = hmmer.query_name
-        self.record['breakpoint'] = hmmer.reference_breakpoint
-        self.record['bp_delta'] = hmmer.breakpoint_delta
-        self.record['mapq'] = hmmer.mapq
-        self.record['ltr.len'] = hmmer.len
-        self.record['ltr.score'] = hmmer.bits
-        self.record['aln.len'] = hmmer.aln_len
-        self.record['ltr.end'] = hmmer.end
-        self.record['ltr.model.border'] = hmmer.model_border
-
+        if not hmmer:
+            return
+        self.record["seqname"] = hmmer.seqname
+        self.record["pair_read"] = "1" if hmmer.is_read1 else "2"
+        self.record["barcode"] = hmmer.barcode
+        self.record["strand"] = hmmer.strand
+        self.record["rname"] = hmmer.query_name
+        self.record["breakpoint"] = hmmer.reference_breakpoint
+        self.record["bp_delta"] = hmmer.breakpoint_delta
+        self.record["mapq"] = hmmer.mapq
+        self.record["ltr.len"] = hmmer.len
+        self.record["ltr.score"] = hmmer.bits
+        self.record["aln.len"] = hmmer.aln_len
+        self.record["ltr.end"] = hmmer.end
+        self.record["ltr.model.border"] = hmmer.model_border
 
     @staticmethod
     def tsvtitle():
-        return "\t".join([
-            "rname",
-            'barcode',
-            'pair.read',
-            "seqname",
-            "strand",
-            "breakpoint",
-            "ltr.end",
-            "ltr.len",
-            "ltr.score",
-            "aln.len",
-            "bp.delta",
-            "mapq",
-            'ltr.model.border'
-        ])
+        return "\t".join(
+            [
+                "rname",
+                "barcode",
+                "pair.read",
+                "seqname",
+                "strand",
+                "breakpoint",
+                "ltr.end",
+                "ltr.len",
+                "ltr.score",
+                "aln.len",
+                "bp.delta",
+                "mapq",
+                "ltr.model.border",
+            ]
+        )
 
     def tsvline(self):
-        return "\t".join([
-            self.record['rname'],
-            self.record['barcode'],
-            self.record['pair_read'],
-            str(self.record['seqname']),
-            str(self.record['strand']),
-            str(self.record['breakpoint']),
-            str(self.record['ltr.end']),
-            str(self.record['ltr.len']),
-            str(self.record['ltr.score']),
-            str(self.record['aln.len']),
-            str(self.record['bp_delta']),
-            str(self.record['mapq']),
-            str(self.record['ltr.model.border']),
-        ])
+        return "\t".join(
+            [
+                self.record["rname"],
+                self.record["barcode"],
+                self.record["pair_read"],
+                str(self.record["seqname"]),
+                str(self.record["strand"]),
+                str(self.record["breakpoint"]),
+                str(self.record["ltr.end"]),
+                str(self.record["ltr.len"]),
+                str(self.record["ltr.score"]),
+                str(self.record["aln.len"]),
+                str(self.record["bp_delta"]),
+                str(self.record["mapq"]),
+                str(self.record["ltr.model.border"]),
+            ]
+        )
 
 
 class Alignment:
@@ -263,21 +272,33 @@ class hmmerHit:
         self.accession = None
         self.accession = hit.alignment.hmm_accession
         self.model = str(hit.alignment.hmm_name)
-        self.model_prime = self.model[len(self.model)-3]
-        assert self.model_prime in ("3","5"), f"model {self.model} has invalid prime {self.model_prime}"
+        self.model_prime = self.model[len(self.model) - 3]
+        assert self.model_prime in (
+            "3",
+            "5",
+        ), f"model {self.model} has invalid prime {self.model_prime}"
         self.model_end = self.model[len(self.model) - 2]
-        assert self.model_end in ("R", "F"), f"model {self.model} has invalid directionality {self.model_prime}"
+        assert self.model_end in (
+            "R",
+            "F",
+        ), f"model {self.model} has invalid directionality {self.model_prime}"
         self.end = self.model_prime + self.model_end
-        if ( self.model_prime == "5" and self.model_end == "F" ) or ( self.model_prime == "3" and self.model_end == "R" ):
-                self.side = SIDE_RIGHT
-                self.model_border = hit.alignment.hmm_from -1
-                self.query_breakpoint = hit.alignment.target_from-1
-                self.breakpoint_delta = self.query_breakpoint - alignment.query_length + alignment.clipped
-        if ( self.model_prime == "5" and self.model_end == "R" ) or ( self.model_prime == "3" and self.model_end == "F"):
-                self.side = SIDE_LEFT
-                self.model_border = hit.alignment.hmm_length - hit.alignment.hmm_to
-                self.query_breakpoint = hit.alignment.target_to
-                self.breakpoint_delta =  alignment.clipped - self.query_breakpoint
+        if (self.model_prime == "5" and self.model_end == "F") or (
+            self.model_prime == "3" and self.model_end == "R"
+        ):
+            self.side = SIDE_RIGHT
+            self.model_border = hit.alignment.hmm_from - 1
+            self.query_breakpoint = hit.alignment.target_from - 1
+            self.breakpoint_delta = (
+                self.query_breakpoint - alignment.query_length + alignment.clipped
+            )
+        if (self.model_prime == "5" and self.model_end == "R") or (
+            self.model_prime == "3" and self.model_end == "F"
+        ):
+            self.side = SIDE_LEFT
+            self.model_border = hit.alignment.hmm_length - hit.alignment.hmm_to
+            self.query_breakpoint = hit.alignment.target_to
+            self.breakpoint_delta = alignment.clipped - self.query_breakpoint
         self.reference_breakpoint = alignment.reference_position(self.query_breakpoint)
         self.bits = hit.score
         self.len = hit.alignment.target_length
@@ -320,9 +341,8 @@ class hmmerHit:
 
         self.extract_barcode(alignment)
 
-
     def extract_barcode(self, alignment: Alignment):
-        if False and len(self.query_name)>45:
+        if False and len(self.query_name) > 45:
             self.barcode = alignment.query_name[-9:]
         else:
             if alignment.rev:
@@ -344,7 +364,8 @@ class hmmerHit:
         Get ratio of length of match in ENV in relation to length of match in MODEL
         :return:
         """
-        if len(self) == 0: return 0
+        if len(self) == 0:
+            return 0
         return self.bits / len(self)
 
     def endstring(self):
@@ -355,6 +376,7 @@ class hmmerHit:
 
     def __str__(self):
         return f"{self.seqname}:{self.reference_breakpoint} {self.end} bp={self.query_breakpoint} {self.cigar} mb={self.model_border} bpd={self.breakpoint_delta} model_side={'L' if self.side==SIDE_LEFT else 'R'} alignment_side={'L' if self.alignment_side==SIDE_LEFT else ('R' if self.alignment_side==SIDE_RIGHT else 'ø')} alignment_clipped={self.clipped} pass={self.passes_filter}"
+
 
 class RecordChunk:
 
@@ -367,7 +389,9 @@ class RecordChunk:
         :param record:
         :return:
         """
-        record.id = int(len(self.records)).to_bytes(2, byteorder=sys.byteorder, signed=False)
+        record.id = int(len(self.records)).to_bytes(
+            2, byteorder=sys.byteorder, signed=False
+        )
         self.records.append(record)
 
     def __getitem__(self, item: bytes) -> Alignment:
@@ -380,16 +404,21 @@ class RecordChunk:
         for r in self.records:
             return r
 
-    def digitalSequenceIterator(self, alphabet) -> Generator[pyhmmer.easel.DigitalSequence]:
+    def digitalSequenceIterator(
+        self, alphabet
+    ) -> Generator[pyhmmer.easel.DigitalSequence]:
         for record in self.records:
-            yield pyhmmer.easel.DigitalSequence(alphabet, sequence=alphabet.encode(record.query_sequence),
-                                                accession=record.id, name=record.query_name.encode('ascii'))
+            yield pyhmmer.easel.DigitalSequence(
+                alphabet,
+                sequence=alphabet.encode(record.query_sequence),
+                accession=record.id,
+                name=record.query_name.encode("ascii"),
+            )
 
     def digitalSequenceBlock(self) -> pyhmmer.easel.DigitalSequenceBlock:
         dna = pyhmmer.easel.Alphabet.dna()
         return pyhmmer.easel.DigitalSequenceBlock(
-            dna,
-            iterable=self.digitalSequenceIterator(dna)
+            dna, iterable=self.digitalSequenceIterator(dna)
         )
 
 
@@ -399,23 +428,32 @@ class nHmmer:
     handles a list of Records (=chunk) for optimization reasons
     Has problems if the length of this list is > 50, I don't know why, this is a pyhmmer problem.
     """
+
     dna = pyhmmer.easel.Alphabet.dna()
 
-    def __init__(self, records: RecordChunk, hmm: pyhmmer.plan7.OptimizedProfileBlock, threads: int):
+    def __init__(
+        self,
+        records: RecordChunk,
+        hmm: pyhmmer.plan7.OptimizedProfileBlock,
+        threads: int,
+    ):
         self.seq = records.digitalSequenceBlock()
         self.threads = threads
         self._records = records
         self.run(hmm)
 
     def run(self, hmm: pyhmmer.plan7.OptimizedProfileBlock):
-        self._results = pyhmmer.hmmer.hmmsearch(queries=hmm, sequences=self.seq, cpus=self.threads, E=10e-3)
+        self._results = pyhmmer.hmmer.hmmsearch(
+            queries=hmm, sequences=self.seq, cpus=self.threads, E=10e-3
+        )
 
     def prepareResults(self) -> Generator[hmmerHit]:
         results = {}
         for topHitsForHmm in self._results:
             for hit in topHitsForHmm.reported:
                 # exclude non-edge results
-                if hit.accession is None: continue
+                if hit.accession is None:
+                    continue
                 domain = hit.best_domain
                 if hit.accession in results.keys():
                     # keep only best result
@@ -430,7 +468,11 @@ class nHmmer:
                 yield (x)
             if x.reference_breakpoint is not None and DEBUG is not None:
                 for seqname, pos in DEBUG:
-                    if x.seqname == seqname and x.reference_breakpoint > pos-250 and x.reference_breakpoint < pos+250:
+                    if (
+                        x.seqname == seqname
+                        and x.reference_breakpoint > pos - 250
+                        and x.reference_breakpoint < pos + 250
+                    ):
                         print(x)
 
 
@@ -441,13 +483,16 @@ result_block = 0
 def initPPE(hmmfile, threads_per_process):
     global hmm, subthreads
     subthreads = threads_per_process
-    hmm = pyhmmer.plan7.OptimizedProfileBlock(alphabet=pyhmmer.easel.Alphabet.dna(),
-                                              iterable=pyhmmer.plan7.HMMPressedFile(hmmfile))
+    hmm = pyhmmer.plan7.OptimizedProfileBlock(
+        alphabet=pyhmmer.easel.Alphabet.dna(),
+        iterable=pyhmmer.plan7.HMMPressedFile(hmmfile),
+    )
+
 
 def workPPE(chunk: RecordChunk):
     global subthreads
     x = list(nHmmer(chunk, hmm, threads=subthreads).prepareResults())
-    return (x)
+    return x
 
 
 def writeResult(future: concurrent.futures.Future):
@@ -473,19 +518,35 @@ by Jeremy Deuel <jeremy.deuel@usz.ch>, June 2024
         print(CommandLineManager.title)
         parser = argparse.ArgumentParser(prog="isa_hmmer2.py")
         parser.add_argument("--bam", required=True, help="Path to bam file. Mandatory")
-        parser.add_argument("--output", required=True,
-                             help="Path to output (tsv) file. Mandatory. If the file already exists, it will be overwritten")
-        parser.add_argument("--threads", type=int, default=None,
-                             help="Number of threads to use. Optional, will be set to the number of CPUs available if not set")
-        parser.add_argument("--hmm", default="resources/iap.hmm",
-                             help="Path to the hmm file. Optional, will be set to resources/iap.hmm if not set.")
-        parser.add_argument("--chunksize", type=int, default=100,
-                             help="Number of records to be merged together into a chunk for multiprocessing. Optional, will be set to 100 if not set.")
+        parser.add_argument(
+            "--output",
+            required=True,
+            help="Path to output (tsv) file. Mandatory. If the file already exists, it will be overwritten",
+        )
+        parser.add_argument(
+            "--threads",
+            type=int,
+            default=None,
+            help="Number of threads to use. Optional, will be set to the number of CPUs available if not set",
+        )
+        parser.add_argument(
+            "--hmm",
+            default="resources/iap.hmm",
+            help="Path to the hmm file. Optional, will be set to resources/iap.hmm if not set.",
+        )
+        parser.add_argument(
+            "--chunksize",
+            type=int,
+            default=100,
+            help="Number of records to be merged together into a chunk for multiprocessing. Optional, will be set to 100 if not set.",
+        )
         args = parser.parse_args()
 
         self.bam = args.bam
         self.output = args.output
-        self.threads = args.threads if args.threads is not None else multiprocessing.cpu_count()
+        self.threads = (
+            args.threads if args.threads is not None else multiprocessing.cpu_count()
+        )
         self.cores = self.threads
         # divide threads by number of subthreads
         self.subthreads = 1
@@ -494,7 +555,8 @@ by Jeremy Deuel <jeremy.deuel@usz.ch>, June 2024
         self.chunksize = args.chunksize
         self.chunksleep = 10  # number of seconds to sleep if chunkbuffer is full
         self.chunkbuffer = math.ceil(
-            500 / self.chunksize * self.chunksleep * self.subthreads * self.threads)  # max number of unprocessed chunks allowed
+            500 / self.chunksize * self.chunksleep * self.subthreads * self.threads
+        )  # max number of unprocessed chunks allowed
 
         print(f"""Parameters:
 BAM-File:       {self.bam}
@@ -540,9 +602,12 @@ if __name__ == "__main__":
     output = open(clm.output, "w")
     output.write(ReportedBreakpoint.tsvtitle())
     output.write("\n")
-    ppe = ProcessPoolExecutor(max_workers=clm.threads,
-                              mp_context=multiprocessing.get_context('spawn'),
-                              initializer=initPPE, initargs=(clm.hmmfile, clm.subthreads))
+    ppe = ProcessPoolExecutor(
+        max_workers=clm.threads,
+        mp_context=multiprocessing.get_context("spawn"),
+        initializer=initPPE,
+        initargs=(clm.hmmfile, clm.subthreads),
+    )
 
     chunk = RecordChunk()
     record1 = None
@@ -553,15 +618,20 @@ if __name__ == "__main__":
     record_number = 0
     for r in samfile:
         record_number += 1
-        if r.is_unmapped: continue
-        if r.is_duplicate: continue
-        if r.is_qcfail: continue
+        if r.is_unmapped:
+            continue
+        if r.is_duplicate:
+            continue
+        if r.is_qcfail:
+            continue
         record = Alignment(r)
         if record.clipped > MIN_CLIPPED_BASES:
             chunk.add(record)
             if len(chunk) > clm.chunksize:
-                while (chunk_number - result_block > clm.chunkbuffer):
-                    print(f"   queue full, waiting for {clm.chunksleep}s before submitting further input")
+                while chunk_number - result_block > clm.chunkbuffer:
+                    print(
+                        f"   queue full, waiting for {clm.chunksleep}s before submitting further input"
+                    )
                     time.sleep(clm.chunksleep)
                 chunk_number += 1
                 if chunk_number % 1000 == 0:
@@ -571,9 +641,13 @@ if __name__ == "__main__":
     if len(chunk):
         chunk_number += 1
         ppe.submit(workPPE, chunk).add_done_callback(writeResult)
-    print(f"...completed submission of whole file, total {record_number} records in {chunk_number} chunks.")
+    print(
+        f"...completed submission of whole file, total {record_number} records in {chunk_number} chunks."
+    )
     ppe.shutdown()
-    print(f"...completed writing of output file, total of {result_line} lines in {result_block} chunks.")
+    print(
+        f"...completed writing of output file, total of {result_line} lines in {result_block} chunks."
+    )
     output.close()
     samfile.close()
     print(f"done in {time.time() - t} seconds.")
