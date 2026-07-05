@@ -29,36 +29,38 @@ def find_consensus(seqs: Iterable[QualitySeq]) -> Tuple[QualitySeq]:
         - string: Consensus sequence
     """
     if len(seqs) == 0:
-        return QualitySeq('', [])
+        return QualitySeq("", [])
     if len(seqs) == 1:
         return seqs[0]
     lengths = [len(s) for s in seqs]
-    seqs = [s.upper() for s in seqs] #ensure upper case
+    seqs = [s.upper() for s in seqs]  # ensure upper case
     consensus_seq = ""
     consensus_score = []
-    consensus_n = []
     for position in range(max(lengths)):
-        base_stat = {
-            'A': 0, 'T': 0, 'G': 0, 'C': 0
-        }
+        base_stat = {"A": 0, "T": 0, "G": 0, "C": 0}
         for sequence in range(len(lengths)):
-            if lengths[sequence] <= position: continue
+            if lengths[sequence] <= position:
+                continue
             base = seqs[sequence].seq(position)
             if not base in base_stat.keys():
                 continue
+            # weight by base-call quality, not just read count, so a few
+            # high-confidence reads can outvote many low-confidence ones
             base_stat[base] += seqs[sequence].qual(position)
-        n_sequences = sum(base_stat.values())
         n_sorted = sorted(base_stat.items(), key=lambda x: x[1], reverse=True)
-        delta_first_two_hits = n_sorted[0][1]-n_sorted[1][1]
-        if delta_first_two_hits > 25:
-            consensus_score.append(min(40+int(delta_first_two_hits/37),delta_first_two_hits))
+        # margin between the best- and second-best-supported base: a small
+        # margin means the position is genuinely ambiguous, not just noisy
+        delta_first_two_hits = n_sorted[0][1] - n_sorted[1][1]
+        if delta_first_two_hits > 25:  # 25 = empirical confidence cutoff on the margin
+            consensus_score.append(
+                # rescale the margin onto a bounded, phred-like confidence score
+                min(40 + int(delta_first_two_hits / 37), delta_first_two_hits)
+            )
             consensus_seq += n_sorted[0][0]
         else:
-            #consensus_score.append(0)
-            #consensus_seq += "N"
-            break #only extract seq to the first ambigous base.
-            #consensus_score.append(0)
-            #consensus_n.append(0)
-            #consensus_seq += "N"
+            # Stop here instead of inserting an "N" placeholder: callers do
+            # exact substring matching (mate lookup in extract_sequences.py)
+            # and BLAT queries on this sequence, where a placeholder base
+            # would only ever produce false negatives.
+            break  # only extract seq to the first ambiguous base
     return QualitySeq(consensus_seq, consensus_score)
-
