@@ -30,6 +30,11 @@ SIDE_LEFT = 0
 SIDE_RIGHT = 1
 MAPQ_CUTOFF = 40  # do not look at alignments with MAPQ smaller than this
 
+# Fixed suffix for output tsv files, so downstream scripts (e.g.
+# scripts/collect_insertions.R) can always find them by pattern; the
+# output filename/extension is not user-configurable, only --outdir is.
+OUTPUT_SUFFIX = ".isa.tsv"
+
 DEBUG = [
     ("chr1", 116518567),
     ("chr6", 8573744),
@@ -519,9 +524,15 @@ by Jeremy Deuel <jeremy.deuel@usz.ch>, June 2024
         parser = argparse.ArgumentParser(prog="isa_hmmer2.py")
         parser.add_argument("--bam", required=True, help="Path to bam file. Mandatory")
         parser.add_argument(
-            "--output",
+            "--outdir",
             required=True,
-            help="Path to output (tsv) file. Mandatory. If the file already exists, it will be overwritten",
+            help=(
+                "Output directory. Mandatory. The output tsv file is named "
+                f"<bam-basename>{OUTPUT_SUFFIX} inside this directory "
+                "(filename/extension are fixed, not configurable). If the "
+                "file already exists, it will be overwritten. Created if it "
+                "does not exist."
+            ),
         )
         parser.add_argument(
             "--threads",
@@ -543,7 +554,9 @@ by Jeremy Deuel <jeremy.deuel@usz.ch>, June 2024
         args = parser.parse_args()
 
         self.bam = args.bam
-        self.output = args.output
+        sample = os.path.splitext(os.path.basename(self.bam))[0]
+        self.outdir = args.outdir
+        self.output = os.path.join(self.outdir, f"{sample}{OUTPUT_SUFFIX}")
         self.threads = (
             args.threads if args.threads is not None else multiprocessing.cpu_count()
         )
@@ -560,6 +573,7 @@ by Jeremy Deuel <jeremy.deuel@usz.ch>, June 2024
 
         print(f"""Parameters:
 BAM-File:       {self.bam}
+Output-Dir:     {self.outdir}
 Output-File:    {self.output}
 Processes       {self.threads}, will be used: {self.threads * self.subthreads + 1}, total cores requested {self.cores}, available {multiprocessing.cpu_count()}
 HMM-File:       {self.hmmfile}
@@ -580,6 +594,10 @@ Subprocesses    {self.subthreads} (fixed value, number of threads per subprocess
         if not os.path.getsize(self.bam):
             print("ERROR: BAM File is empty, aborting.")
             exit(1)
+        if os.path.exists(self.outdir) and not os.path.isdir(self.outdir):
+            print("ERROR: --outdir exists but is not a directory, aborting.")
+            exit(1)
+        os.makedirs(self.outdir, exist_ok=True)
         if os.path.isfile(self.output):
             print("WARNING: Output file exists, will be overwritten.")
         # if os.path.isfile(self.output) and not not os.access(self.output, os.W_OK):
