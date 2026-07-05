@@ -30,24 +30,32 @@ def find_consensus(seqs: Iterable[QualitySeq]) -> Tuple[QualitySeq]:
     """
     if len(seqs) == 0:
         return QualitySeq("", [])
+    
     if len(seqs) == 1:
         return seqs[0]
+    
     lengths = [len(s) for s in seqs]
     seqs = [s.upper() for s in seqs]  # ensure upper case
     consensus_seq = ""
     consensus_score = []
+    
     for position in range(max(lengths)):
         base_stat = {"A": 0, "T": 0, "G": 0, "C": 0}
+        
         for sequence in range(len(lengths)):
             if lengths[sequence] <= position:
                 continue
+            
             base = seqs[sequence].seq(position)
             if not base in base_stat.keys():
                 continue
+            
             # weight by base-call quality, not just read count, so a few
             # high-confidence reads can outvote many low-confidence ones
             base_stat[base] += seqs[sequence].qual(position)
+            
         n_sorted = sorted(base_stat.items(), key=lambda x: x[1], reverse=True)
+        
         # margin between the best- and second-best-supported base: a small
         # margin means the position is genuinely ambiguous, not just noisy
         delta_first_two_hits = n_sorted[0][1] - n_sorted[1][1]
@@ -63,4 +71,5 @@ def find_consensus(seqs: Iterable[QualitySeq]) -> Tuple[QualitySeq]:
             # and BLAT queries on this sequence, where a placeholder base
             # would only ever produce false negatives.
             break  # only extract seq to the first ambiguous base
+    
     return QualitySeq(consensus_seq, consensus_score)
