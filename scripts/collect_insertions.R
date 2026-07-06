@@ -20,9 +20,6 @@ usage <- paste(
   "",
   "Required:",
   "  --metadata FILE     Path to metadata xlsx (must contain an Expt.ID column)",
-  "  --cache-rds FILE    Path to the aggregated-breakpoints rds cache. If it",
-  "                      already exists, it is loaded instead of re-parsing",
-  "                      the tsv files; otherwise it is created.",
   "  --somatic-pdf FILE  Output path for the somatic (single-mouse) plot",
   "  --germline-pdf FILE Output path for the germline (multi-mouse) plot",
   "                      (only written if germline sites are found)",
@@ -30,6 +27,10 @@ usage <- paste(
   "  --audit-xlsx FILE   Output path for the manual-review audit table",
   "",
   "Optional:",
+  "  --cache-rds FILE    Path to the aggregated-breakpoints rds cache. If it",
+  "                      already exists, it is loaded instead of re-parsing",
+  "                      the tsv files; otherwise it is created. If not given,",
+  "                      no cache is read or written.",
   "  --facet-column NAME Metadata column to facet the plots by (e.g. a",
   "                      genotype column). If not given, plots are not",
   "                      faceted.",
@@ -106,7 +107,6 @@ opts <- parse_args(commandArgs(trailingOnly = TRUE))
 
 required <- c(
   "metadata",
-  "cache_rds",
   "somatic_pdf",
   "germline_pdf",
   "output_xlsx",
@@ -194,7 +194,7 @@ novel_sites <- function(file) {
 # (only --outdir is configurable, not the filename/extension), so this is
 # guaranteed to work on any isa_hmmer2.py output, not just this repo's example.
 
-if (file.exists(opts$cache_rds)) {
+if (!is.null(opts$cache_rds) && file.exists(opts$cache_rds)) {
   message(sprintf("Loading cached breakpoints from %s", opts$cache_rds))
   d <- readRDS(opts$cache_rds)
 } else {
@@ -231,7 +231,9 @@ if (file.exists(opts$cache_rds)) {
     d_file$Expt.ID <- gsub("\\.isa\\.tsv$", "", basename(f))
     d <- rbind(d, d_file)
   }
-  saveRDS(d, opts$cache_rds)
+  if (!is.null(opts$cache_rds)) {
+    saveRDS(d, opts$cache_rds)
+  }
 }
 
 ## Summarise -------------------------------------------------------------
