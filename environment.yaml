@@ -14,7 +14,9 @@ dependencies:
   - bioconda::hmmer=3.4
   - bioconda::samtools=1.22
   - bioconda::bwa-mem2=2.3
+  - bioconda::minimap2=2.28
   - pip:
+      - biopython==1.87
       - et_xmlfile==2.0.0
       - numpy==2.2.4
       - openpyxl==3.1.5

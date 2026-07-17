@@ -223,21 +223,61 @@ def extract_window(fasta, seqname, center, window):
     return fasta.fetch(seqname, start, end), start, end
 
 
-def locate_orthologous_window(
-    ref_window_seq, bp_name, minimap2_target_path, query_fasta, minimap2_bin, preset
-):
-    """Find the query-genome window orthologous to ref_window_seq via minimap2.
+def build_minimap2_index(query_fasta_path, minimap2_bin, preset, threads):
+    """Build a minimap2 index (.mmi) for the query genome once, so every
+    breakpoint's orthology lookup can reuse it instead of each one making
+    minimap2 re-index the whole genome from scratch (the dominant cost for a
+    full genome — see locate_orthologous_windows_batch)."""
+    index_path = tempfile.NamedTemporaryFile(suffix=".mmi", delete=False).name
+    _TEMP_FILES.append(index_path)
+    logger.info("Building minimap2 index (-x %s) for %s ...", preset, query_fasta_path)
+    try:
+        subprocess.run(
+            [minimap2_bin, "-x", preset, "-t", str(threads), "-d", index_path, query_fasta_path],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except FileNotFoundError:
+        logger.error(
+            "'%s' not found on PATH. Install minimap2, or pass --same-scaffold "
+            "if the reference and query fastas already share coordinates.",
+            minimap2_bin,
+        )
+        sys.exit(1)
+    except subprocess.CalledProcessError as e:
+        logger.error("minimap2 indexing failed: %s", e.stderr)
+        sys.exit(1)
+    logger.info("minimap2 index built: %s", index_path)
+    return index_path
 
-    Returns (seq, scaffold, start, end, strand, hit_span_diff) or None if no
-    hit was found. hit_span_diff = (target span) - (query span) for the best
-    hit: a value close to the expected insertion size is itself a signal the
-    insertion is present in the query genome (a real minimap2 gap spanning
-    the missing sequence), independent of the clip alignments below.
+
+def locate_orthologous_windows_batch(
+    records, minimap2_index, query_fasta, minimap2_bin, preset, threads
+):
+    """Find the query-genome window orthologous to each record's reference
+    window, in a single minimap2 call against the pre-built index — instead
+    of one subprocess (and, previously, one from-scratch index build) per
+    breakpoint.
+
+    `records` is an iterable of objects with a unique `.key` and a
+    `.ref_window_seq`. Returns {key: (seq, scaffold, start, end, strand,
+    hit_span_diff)} for keys with a hit; keys with no hit are simply absent
+    from the returned dict. hit_span_diff = (target span) - (query span)
+    for that hit: a value close to the expected insertion size is itself a
+    signal the insertion is present in the query genome (a real minimap2
+    gap spanning the missing sequence), independent of the clip alignments.
     """
-    logger.debug("Running minimap2 (-x %s) for %s against %s", preset, bp_name, minimap2_target_path)
+    records = list(records)
+    if not records:
+        return {}
+
     with tempfile.NamedTemporaryFile(mode="w", suffix=".fa", delete=False) as tmp:
-        tmp.write(f">{bp_name}\n{ref_window_seq}\n")
+        for rec in records:
+            tmp.write(f">{rec.key}\n{rec.ref_window_seq}\n")
         tmp_path = tmp.name
+
+    logger.info("Running one batched minimap2 query for %d breakpoint(s)...", len(records))
     try:
         try:
             result = subprocess.run(
@@ -245,8 +285,10 @@ def locate_orthologous_window(
                     minimap2_bin,
                     "-x",
                     preset,
+                    "-t",
+                    str(threads),
                     "--secondary=no",
-                    minimap2_target_path,
+                    minimap2_index,
                     tmp_path,
                 ],
                 capture_output=True,
@@ -261,29 +303,48 @@ def locate_orthologous_window(
             )
             sys.exit(1)
         except subprocess.CalledProcessError as e:
-            logger.warning("minimap2 failed for %s: %s", bp_name, e.stderr)
-            return None
+            logger.warning("minimap2 batch mapping failed: %s", e.stderr)
+            return {}
     finally:
         os.unlink(tmp_path)
 
-    lines = [l for l in result.stdout.splitlines() if l.strip()]
-    if not lines:
-        logger.debug("%s: no minimap2 hit against the query genome", bp_name)
-        return None
-    best = max(lines, key=lambda l: int(l.split("\t")[9]))  # nmatch
-    fields = best.split("\t")
-    tname, tstart, tend, strand = fields[5], int(fields[7]), int(fields[8]), fields[4]
-    qstart, qend = int(fields[2]), int(fields[3])
+    best_by_key = {}
+    for line in result.stdout.splitlines():
+        if not line.strip():
+            continue
+        fields = line.split("\t")
+        key, nmatch = fields[0], int(fields[9])
+        if key not in best_by_key or nmatch > int(best_by_key[key][9]):
+            best_by_key[key] = fields
 
-    seq = query_fasta.fetch(tname, tstart, tend)
-    if strand == "-":
-        seq = str(Seq(seq).reverse_complement())
-    hit_span_diff = (tend - tstart) - (qend - qstart)
-    logger.debug(
-        "%s: orthologous window %s:%d-%d(%s), span diff %+d",
-        bp_name, tname, tstart, tend, strand, hit_span_diff,
+    hits = {}
+    for key, fields in best_by_key.items():
+        qstart, qend = int(fields[2]), int(fields[3])
+        strand = fields[4]
+        tname, tstart, tend = fields[5], int(fields[7]), int(fields[8])
+        seq = query_fasta.fetch(tname, tstart, tend)
+        if strand == "-":
+            seq = str(Seq(seq).reverse_complement())
+        hit_span_diff = (tend - tstart) - (qend - qstart)
+        hits[key] = (seq, tname, tstart, tend, strand, hit_span_diff)
+        logger.debug(
+            "%s: orthologous window %s:%d-%d(%s), span diff %+d",
+            key, tname, tstart, tend, strand, hit_span_diff,
+        )
+    logger.info(
+        "%d/%d breakpoint(s) had a minimap2 hit in the query genome", len(hits), len(records)
     )
-    return seq, tname, tstart, tend, strand, hit_span_diff
+    return hits
+
+
+@dataclass
+class PendingRecord:
+    key: str
+    sample: str
+    bp: Breakpoint
+    ref_window_seq: str
+    ref_start: int
+    ref_end: int
 
 
 @dataclass
@@ -437,6 +498,12 @@ def main():
         help="minimap2 -x preset for orthologous-locus lookup. Default: asm5",
     )
     parser.add_argument(
+        "--minimap2-threads",
+        type=int,
+        default=4,
+        help="Threads for minimap2 index building and mapping. Default: 4",
+    )
+    parser.add_argument(
         "--log-level",
         default="INFO",
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
@@ -458,6 +525,10 @@ def main():
         handler.setFormatter(log_format)
     logging.basicConfig(level=args.log_level, handlers=handlers)
 
+    logger.info("Run configuration:")
+    for key, value in sorted(vars(args).items()):
+        logger.info("  --%s = %s", key.replace("_", "-"), value)
+
     for path in (args.reference_fasta, args.query_fasta):
         if not os.path.isfile(path):
             logger.error("file not found: %s", path)
@@ -476,144 +547,162 @@ def main():
     ref_fasta, _ = prepare_fasta(args.reference_fasta)
     query_fasta, query_fasta_resolved_path = prepare_fasta(args.query_fasta)
 
+    minimap2_index = None
+    if not args.same_scaffold:
+        minimap2_index = build_minimap2_index(
+            query_fasta_resolved_path, args.minimap2_bin, args.minimap2_preset,
+            args.minimap2_threads,
+        )
+
     rows = []
     windows_out_path = os.path.splitext(args.output)[0] + ".windows.fa"
     try:
+        # Pass 1: parse every evidence file and extract each breakpoint's
+        # reference window (cheap — indexed random access on an already-open
+        # fasta).
+        pending = []
+        for evidence_path in evidence_files:
+            sample = sample_name(evidence_path)
+            logger.info("Reading sample '%s' (%s)", sample, evidence_path)
+            for bp in parse_evidence_fa(evidence_path):
+                key = f"{sample}_{bp.name}"
+                try:
+                    ref_window_seq, ref_start, ref_end = extract_window(
+                        ref_fasta, bp.seqname, bp.pos1, args.window
+                    )
+                except (KeyError, ValueError) as e:
+                    logger.warning(
+                        "%s: skipping, couldn't read reference window: %s", key, e
+                    )
+                    continue
+                pending.append(
+                    PendingRecord(key, sample, bp, ref_window_seq, ref_start, ref_end)
+                )
+        logger.info("%d breakpoint(s) to check across %d sample(s)", len(pending), len(evidence_files))
+
+        # Pass 2: locate every orthologous window in one batched minimap2
+        # call against the pre-built index (skipped entirely for
+        # --same-scaffold, where coordinates are just reused directly).
+        batch_hits = {}
+        if not args.same_scaffold:
+            batch_hits = locate_orthologous_windows_batch(
+                pending, minimap2_index, query_fasta,
+                args.minimap2_bin, args.minimap2_preset, args.minimap2_threads,
+            )
+
+        # Pass 3: align clips against both windows and classify each breakpoint.
         with open(windows_out_path, "w") as windows_out:
-            for evidence_path in evidence_files:
-                sample = sample_name(evidence_path)
-                logger.info("Processing sample '%s' (%s)", sample, evidence_path)
-                for bp in parse_evidence_fa(evidence_path):
-                    logger.info("Processing %s:%s", sample, bp.name)
+            for rec in pending:
+                bp = rec.bp
+                logger.info("Processing %s", rec.key)
+                windows_out.write(
+                    f">{rec.key}_reference:{bp.seqname}:{rec.ref_start}-{rec.ref_end}\n{rec.ref_window_seq}\n"
+                )
+
+                query_scaffold = query_start = query_end = query_strand = (
+                    hit_span_diff
+                ) = None
+                if args.same_scaffold:
                     try:
-                        ref_window_seq, ref_start, ref_end = extract_window(
-                            ref_fasta, bp.seqname, bp.pos1, args.window
+                        query_window_seq, query_start, query_end = extract_window(
+                            query_fasta, bp.seqname, bp.pos1, args.window
                         )
-                    except (KeyError, ValueError) as e:
-                        logger.warning(
-                            "%s:%s: skipping, couldn't read reference window: %s",
-                            sample, bp.name, e,
-                        )
-                        continue
-                    logger.debug(
-                        "%s:%s: reference window %s:%d-%d (%dbp)",
-                        sample, bp.name, bp.seqname, ref_start, ref_end, ref_end - ref_start,
-                    )
-                    windows_out.write(
-                        f">{sample}_{bp.name}_reference:{bp.seqname}:{ref_start}-{ref_end}\n{ref_window_seq}\n"
-                    )
-
-                    query_scaffold = query_start = query_end = query_strand = (
-                        hit_span_diff
-                    ) = None
-                    if args.same_scaffold:
-                        try:
-                            query_window_seq, query_start, query_end = extract_window(
-                                query_fasta, bp.seqname, bp.pos1, args.window
-                            )
-                            query_scaffold, query_strand = bp.seqname, "+"
-                        except (KeyError, ValueError):
-                            query_window_seq = None
+                        query_scaffold, query_strand = bp.seqname, "+"
+                    except (KeyError, ValueError):
+                        query_window_seq = None
+                else:
+                    hit = batch_hits.get(rec.key)
+                    if hit is None:
+                        query_window_seq = None
                     else:
-                        hit = locate_orthologous_window(
-                            ref_window_seq,
-                            f"{sample}_{bp.name}",
-                            query_fasta_resolved_path,
-                            query_fasta,
-                            args.minimap2_bin,
-                            args.minimap2_preset,
-                        )
-                        if hit is None:
-                            query_window_seq = None
-                        else:
-                            (
-                                query_window_seq,
-                                query_scaffold,
-                                query_start,
-                                query_end,
-                                query_strand,
-                                hit_span_diff,
-                            ) = hit
+                        (
+                            query_window_seq,
+                            query_scaffold,
+                            query_start,
+                            query_end,
+                            query_strand,
+                            hit_span_diff,
+                        ) = hit
 
-                    if query_window_seq:
-                        windows_out.write(
-                            f">{sample}_{bp.name}_query:{query_scaffold}:{query_start}-{query_end}({query_strand})\n"
-                            f"{query_window_seq}\n"
-                        )
-
-                    window_vs_window = (
-                        local_align(ref_window_seq, query_window_seq)
-                        if query_window_seq
-                        else AlignResult()
+                if query_window_seq:
+                    windows_out.write(
+                        f">{rec.key}_query:{query_scaffold}:{query_start}-{query_end}({query_strand})\n"
+                        f"{query_window_seq}\n"
                     )
 
-                    right_clip = bp.longest_right_clip
-                    left_clip = bp.longest_left_clip
-                    right_vs_ref = local_align(right_clip, ref_window_seq)
-                    left_vs_ref = local_align(left_clip, ref_window_seq)
-                    right_vs_query = (
-                        local_align(right_clip, query_window_seq)
-                        if query_window_seq
-                        else AlignResult()
-                    )
-                    left_vs_query = (
-                        local_align(left_clip, query_window_seq)
-                        if query_window_seq
-                        else AlignResult()
-                    )
+                window_vs_window = (
+                    local_align(rec.ref_window_seq, query_window_seq)
+                    if query_window_seq
+                    else AlignResult()
+                )
 
-                    note = (
-                        classify(
-                            right_vs_ref,
-                            right_vs_query,
-                            left_vs_ref,
-                            left_vs_query,
-                            args.min_identity,
-                            args.min_coverage,
-                            len(right_clip),
-                            len(left_clip),
-                        )
-                        if query_window_seq
-                        else "no orthologous window found"
-                    )
-                    logger.info("%s:%s: %s", sample, bp.name, note)
+                right_clip = bp.longest_right_clip
+                left_clip = bp.longest_left_clip
+                right_vs_ref = local_align(right_clip, rec.ref_window_seq)
+                left_vs_ref = local_align(left_clip, rec.ref_window_seq)
+                right_vs_query = (
+                    local_align(right_clip, query_window_seq)
+                    if query_window_seq
+                    else AlignResult()
+                )
+                left_vs_query = (
+                    local_align(left_clip, query_window_seq)
+                    if query_window_seq
+                    else AlignResult()
+                )
 
-                    rows.append(
-                        {
-                            "sample": sample,
-                            "seqname": bp.seqname,
-                            "pos": bp.pos1,
-                            "strand": bp.strand,
-                            "right_clip_len": len(right_clip),
-                            "left_clip_len": len(left_clip),
-                            "query_scaffold": query_scaffold,
-                            "query_start": query_start,
-                            "query_end": query_end,
-                            "query_strand": query_strand,
-                            "orthology_hit_span_diff": hit_span_diff,
-                            "window_identity_pct": window_vs_window.identity_pct,
-                            "window_aligned_len": window_vs_window.aligned_len,
-                            "right_clip_vs_ref_identity_pct": right_vs_ref.identity_pct,
-                            "right_clip_vs_ref_aligned_len": right_vs_ref.aligned_len,
-                            "right_clip_vs_query_identity_pct": right_vs_query.identity_pct,
-                            "right_clip_vs_query_aligned_len": right_vs_query.aligned_len,
-                            "right_clip_vs_query_pos": (
-                                f"{right_vs_query.target_start}-{right_vs_query.target_end}"
-                                if right_vs_query.target_start >= 0
-                                else None
-                            ),
-                            "left_clip_vs_ref_identity_pct": left_vs_ref.identity_pct,
-                            "left_clip_vs_ref_aligned_len": left_vs_ref.aligned_len,
-                            "left_clip_vs_query_identity_pct": left_vs_query.identity_pct,
-                            "left_clip_vs_query_aligned_len": left_vs_query.aligned_len,
-                            "left_clip_vs_query_pos": (
-                                f"{left_vs_query.target_start}-{left_vs_query.target_end}"
-                                if left_vs_query.target_start >= 0
-                                else None
-                            ),
-                            "note": note,
-                        }
+                note = (
+                    classify(
+                        right_vs_ref,
+                        right_vs_query,
+                        left_vs_ref,
+                        left_vs_query,
+                        args.min_identity,
+                        args.min_coverage,
+                        len(right_clip),
+                        len(left_clip),
                     )
+                    if query_window_seq
+                    else "no orthologous window found"
+                )
+                logger.info("%s: %s", rec.key, note)
+
+                rows.append(
+                    {
+                        "sample": rec.sample,
+                        "seqname": bp.seqname,
+                        "pos": bp.pos1,
+                        "strand": bp.strand,
+                        "right_clip_len": len(right_clip),
+                        "left_clip_len": len(left_clip),
+                        "query_scaffold": query_scaffold,
+                        "query_start": query_start,
+                        "query_end": query_end,
+                        "query_strand": query_strand,
+                        "orthology_hit_span_diff": hit_span_diff,
+                        "window_identity_pct": window_vs_window.identity_pct,
+                        "window_aligned_len": window_vs_window.aligned_len,
+                        "right_clip_vs_ref_identity_pct": right_vs_ref.identity_pct,
+                        "right_clip_vs_ref_aligned_len": right_vs_ref.aligned_len,
+                        "right_clip_vs_query_identity_pct": right_vs_query.identity_pct,
+                        "right_clip_vs_query_aligned_len": right_vs_query.aligned_len,
+                        "right_clip_vs_query_pos": (
+                            f"{right_vs_query.target_start}-{right_vs_query.target_end}"
+                            if right_vs_query.target_start >= 0
+                            else None
+                        ),
+                        "left_clip_vs_ref_identity_pct": left_vs_ref.identity_pct,
+                        "left_clip_vs_ref_aligned_len": left_vs_ref.aligned_len,
+                        "left_clip_vs_query_identity_pct": left_vs_query.identity_pct,
+                        "left_clip_vs_query_aligned_len": left_vs_query.aligned_len,
+                        "left_clip_vs_query_pos": (
+                            f"{left_vs_query.target_start}-{left_vs_query.target_end}"
+                            if left_vs_query.target_start >= 0
+                            else None
+                        ),
+                        "note": note,
+                    }
+                )
     finally:
         for tmp_path in _TEMP_FILES:
             os.unlink(tmp_path)
