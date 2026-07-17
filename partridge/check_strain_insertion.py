@@ -442,14 +442,21 @@ def main():
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
         help="Logging verbosity. Default: INFO",
     )
+    parser.add_argument(
+        "--log-file",
+        help="Optional path to also write log entries to (in addition to stderr)",
+    )
     args = parser.parse_args()
 
-    logging.basicConfig(
-        level=args.log_level,
-        format="%(asctime)s %(levelname)-8s %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-        stream=sys.stderr,
+    log_format = logging.Formatter(
+        "%(asctime)s %(levelname)-8s %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
     )
+    handlers = [logging.StreamHandler(sys.stderr)]
+    if args.log_file:
+        handlers.append(logging.FileHandler(args.log_file))
+    for handler in handlers:
+        handler.setFormatter(log_format)
+    logging.basicConfig(level=args.log_level, handlers=handlers)
 
     for path in (args.reference_fasta, args.query_fasta):
         if not os.path.isfile(path):
