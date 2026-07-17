@@ -21,12 +21,19 @@ This reports alignment metrics for manual review — it does not make the
 present/absent call for you (a "note" column applies a simple, overridable
 threshold as a starting point only).
 
+Multiple evidence files (e.g. one per sample) can be checked in a single run
+via --evidence-dir — output rows gain a "sample" column (each evidence
+file's basename with its extension stripped), and the companion windows.fa
+gets sample-prefixed headers, so results from every sample land in one
+combined tsv/fasta pair.
+
 Dependencies beyond this repo's usual env.txt: biopython>=1.80 (pairwise
 local alignment), and the minimap2 binary on PATH (only needed unless
 --same-scaffold is given).
 """
 
 import argparse
+import glob
 import gzip
 import logging
 import os
@@ -111,6 +118,28 @@ def parse_evidence_fa(path):
                 bp.right_clips.append(line)
     if bp is not None:
         yield bp
+
+
+def sample_name(path):
+    """Derive a sample name from an evidence file path by stripping its
+    extension(s), e.g. '10.3C.fa.gz' -> '10.3C', 'sample1.fasta' -> 'sample1'."""
+    base = os.path.basename(path)
+    for suffix in (".fa.gz", ".fasta.gz", ".fa", ".fasta"):
+        if base.endswith(suffix):
+            return base[: -len(suffix)]
+    return os.path.splitext(base)[0]
+
+
+def find_evidence_files(directory):
+    files = sorted(
+        p
+        for p in glob.glob(os.path.join(directory, "*"))
+        if p.endswith(".fa") or p.endswith(".fa.gz")
+    )
+    if not files:
+        logger.error("No *.fa / *.fa.gz evidence files found in %s", directory)
+        sys.exit(1)
+    return files
 
 
 _TEMP_FILES = []
@@ -348,10 +377,15 @@ def main():
         required=True,
         help="Second genome fasta to check for pre-existing insertions (e.g. CD-1)",
     )
-    parser.add_argument(
+    evidence_group = parser.add_mutually_exclusive_group(required=True)
+    evidence_group.add_argument(
+        "--evidence-dir",
+        help="Directory to scan for *.fa/*.fa.gz evidence files (from collect_evidence.py)",
+    )
+    evidence_group.add_argument(
         "--evidence-fa",
-        required=True,
-        help="Path to the .fa/.fa.gz file produced by collect_evidence.py",
+        nargs="+",
+        help="One or more explicit evidence .fa/.fa.gz file paths (e.g. one per sample)",
     )
     parser.add_argument(
         "--same-scaffold",
@@ -417,10 +451,20 @@ def main():
         stream=sys.stderr,
     )
 
-    for path in (args.reference_fasta, args.query_fasta, args.evidence_fa):
+    for path in (args.reference_fasta, args.query_fasta):
         if not os.path.isfile(path):
             logger.error("file not found: %s", path)
             sys.exit(1)
+
+    if args.evidence_dir:
+        evidence_files = find_evidence_files(args.evidence_dir)
+    else:
+        evidence_files = args.evidence_fa
+        for path in evidence_files:
+            if not os.path.isfile(path):
+                logger.error("file not found: %s", path)
+                sys.exit(1)
+    logger.info("Found %d evidence file(s) to process", len(evidence_files))
 
     ref_fasta, _ = prepare_fasta(args.reference_fasta)
     query_fasta, query_fasta_resolved_path = prepare_fasta(args.query_fasta)
@@ -429,140 +473,148 @@ def main():
     windows_out_path = os.path.splitext(args.output)[0] + ".windows.fa"
     try:
         with open(windows_out_path, "w") as windows_out:
-            for bp in parse_evidence_fa(args.evidence_fa):
-                logger.info("Processing %s", bp.name)
-                try:
-                    ref_window_seq, ref_start, ref_end = extract_window(
-                        ref_fasta, bp.seqname, bp.pos1, args.window
-                    )
-                except (KeyError, ValueError) as e:
-                    logger.warning("%s: skipping, couldn't read reference window: %s", bp.name, e)
-                    continue
-                logger.debug(
-                    "%s: reference window %s:%d-%d (%dbp)",
-                    bp.name, bp.seqname, ref_start, ref_end, ref_end - ref_start,
-                )
-                windows_out.write(
-                    f">{bp.name}_reference:{bp.seqname}:{ref_start}-{ref_end}\n{ref_window_seq}\n"
-                )
-
-                query_scaffold = query_start = query_end = query_strand = (
-                    hit_span_diff
-                ) = None
-                if args.same_scaffold:
+            for evidence_path in evidence_files:
+                sample = sample_name(evidence_path)
+                logger.info("Processing sample '%s' (%s)", sample, evidence_path)
+                for bp in parse_evidence_fa(evidence_path):
+                    logger.info("Processing %s:%s", sample, bp.name)
                     try:
-                        query_window_seq, query_start, query_end = extract_window(
-                            query_fasta, bp.seqname, bp.pos1, args.window
+                        ref_window_seq, ref_start, ref_end = extract_window(
+                            ref_fasta, bp.seqname, bp.pos1, args.window
                         )
-                        query_scaffold, query_strand = bp.seqname, "+"
-                    except (KeyError, ValueError):
-                        query_window_seq = None
-                else:
-                    hit = locate_orthologous_window(
-                        ref_window_seq,
-                        bp.name,
-                        query_fasta_resolved_path,
-                        query_fasta,
-                        args.minimap2_bin,
-                        args.minimap2_preset,
+                    except (KeyError, ValueError) as e:
+                        logger.warning(
+                            "%s:%s: skipping, couldn't read reference window: %s",
+                            sample, bp.name, e,
+                        )
+                        continue
+                    logger.debug(
+                        "%s:%s: reference window %s:%d-%d (%dbp)",
+                        sample, bp.name, bp.seqname, ref_start, ref_end, ref_end - ref_start,
                     )
-                    if hit is None:
-                        query_window_seq = None
-                    else:
-                        (
-                            query_window_seq,
-                            query_scaffold,
-                            query_start,
-                            query_end,
-                            query_strand,
-                            hit_span_diff,
-                        ) = hit
-
-                if query_window_seq:
                     windows_out.write(
-                        f">{bp.name}_query:{query_scaffold}:{query_start}-{query_end}({query_strand})\n"
-                        f"{query_window_seq}\n"
+                        f">{sample}_{bp.name}_reference:{bp.seqname}:{ref_start}-{ref_end}\n{ref_window_seq}\n"
                     )
 
-                window_vs_window = (
-                    local_align(ref_window_seq, query_window_seq)
-                    if query_window_seq
-                    else AlignResult()
-                )
+                    query_scaffold = query_start = query_end = query_strand = (
+                        hit_span_diff
+                    ) = None
+                    if args.same_scaffold:
+                        try:
+                            query_window_seq, query_start, query_end = extract_window(
+                                query_fasta, bp.seqname, bp.pos1, args.window
+                            )
+                            query_scaffold, query_strand = bp.seqname, "+"
+                        except (KeyError, ValueError):
+                            query_window_seq = None
+                    else:
+                        hit = locate_orthologous_window(
+                            ref_window_seq,
+                            f"{sample}_{bp.name}",
+                            query_fasta_resolved_path,
+                            query_fasta,
+                            args.minimap2_bin,
+                            args.minimap2_preset,
+                        )
+                        if hit is None:
+                            query_window_seq = None
+                        else:
+                            (
+                                query_window_seq,
+                                query_scaffold,
+                                query_start,
+                                query_end,
+                                query_strand,
+                                hit_span_diff,
+                            ) = hit
 
-                right_clip = bp.longest_right_clip
-                left_clip = bp.longest_left_clip
-                right_vs_ref = local_align(right_clip, ref_window_seq)
-                left_vs_ref = local_align(left_clip, ref_window_seq)
-                right_vs_query = (
-                    local_align(right_clip, query_window_seq)
-                    if query_window_seq
-                    else AlignResult()
-                )
-                left_vs_query = (
-                    local_align(left_clip, query_window_seq)
-                    if query_window_seq
-                    else AlignResult()
-                )
+                    if query_window_seq:
+                        windows_out.write(
+                            f">{sample}_{bp.name}_query:{query_scaffold}:{query_start}-{query_end}({query_strand})\n"
+                            f"{query_window_seq}\n"
+                        )
 
-                note = (
-                    classify(
-                        right_vs_ref,
-                        right_vs_query,
-                        left_vs_ref,
-                        left_vs_query,
-                        args.min_identity,
-                        args.min_coverage,
-                        len(right_clip),
-                        len(left_clip),
+                    window_vs_window = (
+                        local_align(ref_window_seq, query_window_seq)
+                        if query_window_seq
+                        else AlignResult()
                     )
-                    if query_window_seq
-                    else "no orthologous window found"
-                )
-                logger.info("%s: %s", bp.name, note)
 
-                rows.append(
-                    {
-                        "seqname": bp.seqname,
-                        "pos": bp.pos1,
-                        "strand": bp.strand,
-                        "right_clip_len": len(right_clip),
-                        "left_clip_len": len(left_clip),
-                        "query_scaffold": query_scaffold,
-                        "query_start": query_start,
-                        "query_end": query_end,
-                        "query_strand": query_strand,
-                        "orthology_hit_span_diff": hit_span_diff,
-                        "window_identity_pct": window_vs_window.identity_pct,
-                        "window_aligned_len": window_vs_window.aligned_len,
-                        "right_clip_vs_ref_identity_pct": right_vs_ref.identity_pct,
-                        "right_clip_vs_ref_aligned_len": right_vs_ref.aligned_len,
-                        "right_clip_vs_query_identity_pct": right_vs_query.identity_pct,
-                        "right_clip_vs_query_aligned_len": right_vs_query.aligned_len,
-                        "right_clip_vs_query_pos": (
-                            f"{right_vs_query.target_start}-{right_vs_query.target_end}"
-                            if right_vs_query.target_start >= 0
-                            else None
-                        ),
-                        "left_clip_vs_ref_identity_pct": left_vs_ref.identity_pct,
-                        "left_clip_vs_ref_aligned_len": left_vs_ref.aligned_len,
-                        "left_clip_vs_query_identity_pct": left_vs_query.identity_pct,
-                        "left_clip_vs_query_aligned_len": left_vs_query.aligned_len,
-                        "left_clip_vs_query_pos": (
-                            f"{left_vs_query.target_start}-{left_vs_query.target_end}"
-                            if left_vs_query.target_start >= 0
-                            else None
-                        ),
-                        "note": note,
-                    }
-                )
+                    right_clip = bp.longest_right_clip
+                    left_clip = bp.longest_left_clip
+                    right_vs_ref = local_align(right_clip, ref_window_seq)
+                    left_vs_ref = local_align(left_clip, ref_window_seq)
+                    right_vs_query = (
+                        local_align(right_clip, query_window_seq)
+                        if query_window_seq
+                        else AlignResult()
+                    )
+                    left_vs_query = (
+                        local_align(left_clip, query_window_seq)
+                        if query_window_seq
+                        else AlignResult()
+                    )
+
+                    note = (
+                        classify(
+                            right_vs_ref,
+                            right_vs_query,
+                            left_vs_ref,
+                            left_vs_query,
+                            args.min_identity,
+                            args.min_coverage,
+                            len(right_clip),
+                            len(left_clip),
+                        )
+                        if query_window_seq
+                        else "no orthologous window found"
+                    )
+                    logger.info("%s:%s: %s", sample, bp.name, note)
+
+                    rows.append(
+                        {
+                            "sample": sample,
+                            "seqname": bp.seqname,
+                            "pos": bp.pos1,
+                            "strand": bp.strand,
+                            "right_clip_len": len(right_clip),
+                            "left_clip_len": len(left_clip),
+                            "query_scaffold": query_scaffold,
+                            "query_start": query_start,
+                            "query_end": query_end,
+                            "query_strand": query_strand,
+                            "orthology_hit_span_diff": hit_span_diff,
+                            "window_identity_pct": window_vs_window.identity_pct,
+                            "window_aligned_len": window_vs_window.aligned_len,
+                            "right_clip_vs_ref_identity_pct": right_vs_ref.identity_pct,
+                            "right_clip_vs_ref_aligned_len": right_vs_ref.aligned_len,
+                            "right_clip_vs_query_identity_pct": right_vs_query.identity_pct,
+                            "right_clip_vs_query_aligned_len": right_vs_query.aligned_len,
+                            "right_clip_vs_query_pos": (
+                                f"{right_vs_query.target_start}-{right_vs_query.target_end}"
+                                if right_vs_query.target_start >= 0
+                                else None
+                            ),
+                            "left_clip_vs_ref_identity_pct": left_vs_ref.identity_pct,
+                            "left_clip_vs_ref_aligned_len": left_vs_ref.aligned_len,
+                            "left_clip_vs_query_identity_pct": left_vs_query.identity_pct,
+                            "left_clip_vs_query_aligned_len": left_vs_query.aligned_len,
+                            "left_clip_vs_query_pos": (
+                                f"{left_vs_query.target_start}-{left_vs_query.target_end}"
+                                if left_vs_query.target_start >= 0
+                                else None
+                            ),
+                            "note": note,
+                        }
+                    )
     finally:
         for tmp_path in _TEMP_FILES:
             os.unlink(tmp_path)
 
     pd.DataFrame(rows).to_csv(args.output, sep="\t", index=False)
     logger.info(
-        "Wrote %d breakpoint(s) to %s and %s", len(rows), args.output, windows_out_path
+        "Wrote %d breakpoint(s) from %d sample(s) to %s and %s",
+        len(rows), len(evidence_files), args.output, windows_out_path,
     )
 
 
