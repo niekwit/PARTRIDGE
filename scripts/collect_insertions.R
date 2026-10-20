@@ -46,7 +46,9 @@ usage <- paste(
   "  --tsv FILE [FILE ...]   One or more explicit tsv file paths",
   "",
   "Required:",
-  "  --metadata FILE     Path to metadata xlsx (must contain an Expt.ID column)",
+  "  --metadata FILE     Path to metadata xlsx. Must contain an Expt.ID column",
+  "                      (tsv filename without .isa.tsv, one row per sample)",
+  "                      and a mouse column (x axis of the plots)",
   "  --somatic-pdf FILE  Output path for the somatic (single-mouse) plot",
   "  --germline-pdf FILE Output path for the germline (multi-mouse) plot",
   "                      (only written if germline sites are found)",
@@ -55,9 +57,10 @@ usage <- paste(
   "",
   "Optional:",
   "  --cache-rds FILE    Path to the aggregated-breakpoints rds cache. If it",
-  "                      already exists, it is loaded instead of re-parsing",
-  "                      the tsv files; otherwise it is created. If not given,",
-  "                      no cache is read or written.",
+  "                      exists and was built from the same tsv files (path,",
+  "                      size, modification time), it is loaded instead of",
+  "                      re-parsing them; otherwise it is (re)built. If not",
+  "                      given, no cache is read or written.",
   "  --facet-column NAME Metadata column to facet the plots by (e.g. a",
   "                      genotype column). If not given, plots are not",
   "                      faceted.",
@@ -256,40 +259,76 @@ novel_sites <- function(file) {
 # output, not just this repo's example.
 #
 # Parsing many large tsv files is slow, so the stacked table can be cached in
-# an rds file (--cache-rds). If the cache exists it is used as is: delete it
-# after adding/changing tsv files, otherwise they are silently ignored.
+# an rds file (--cache-rds). The cache stores, next to the table, a
+# fingerprint of the tsv files it was built from (path, size and modification
+# time). It is only reused when the current input has exactly the same
+# fingerprint; after adding, removing or regenerating a tsv file it is rebuilt
+# automatically. Changes to novel_sites() itself are not detected: delete the
+# cache after editing that function.
 
-if (!is.null(opts$cache_rds) && file.exists(opts$cache_rds)) {
-  message(sprintf("Loading cached breakpoints from %s", opts$cache_rds))
-  d <- readRDS(opts$cache_rds)
-} else {
-  if (!is.null(opts$tsv_dir)) {
-    tsv_files <- list.files(
-      opts$tsv_dir,
-      pattern = "\\.isa\\.tsv$",
-      full.names = TRUE
+# Resolve the input tsv files (always, also when a cache exists, so the cache
+# can be checked against them)
+if (!is.null(opts$tsv_dir)) {
+  tsv_files <- list.files(
+    opts$tsv_dir,
+    pattern = "\\.isa\\.tsv$",
+    full.names = TRUE
+  )
+  if (length(tsv_files) == 0) {
+    stop(
+      sprintf("No *.isa.tsv files found in %s", opts$tsv_dir),
+      call. = FALSE
     )
-    if (length(tsv_files) == 0) {
-      stop(
-        sprintf("No *.isa.tsv files found in %s", opts$tsv_dir),
-        call. = FALSE
-      )
-    }
-  } else {
-    tsv_files <- opts$tsv
-    missing_files <- tsv_files[!file.exists(tsv_files)]
-    if (length(missing_files) > 0) {
-      stop(
-        sprintf(
-          "tsv file(s) not found: %s",
-          paste(missing_files, collapse = ", ")
-        ),
-        call. = FALSE
-      )
-    }
   }
+} else {
+  tsv_files <- opts$tsv
+  missing_files <- tsv_files[!file.exists(tsv_files)]
+  if (length(missing_files) > 0) {
+    stop(
+      sprintf(
+        "tsv file(s) not found: %s",
+        paste(missing_files, collapse = ", ")
+      ),
+      call. = FALSE
+    )
+  }
+}
 
-  d <- NULL
+tsv_fingerprint <- function(files) {
+  info <- file.info(files)
+  fp <- data.frame(
+    file = normalizePath(files),
+    size = info$size,
+    mtime = as.numeric(info$mtime),
+    row.names = NULL
+  )
+  fp <- fp[order(fp$file), ]
+  rownames(fp) <- NULL
+  fp
+}
+fingerprint <- tsv_fingerprint(tsv_files)
+
+d <- NULL
+if (!is.null(opts$cache_rds) && file.exists(opts$cache_rds)) {
+  cache <- readRDS(opts$cache_rds)
+  # Caches written before the fingerprint was added are a bare data frame
+  # and are always rebuilt
+  if (
+    is.list(cache) &&
+      !is.data.frame(cache) &&
+      identical(cache$inputs, fingerprint)
+  ) {
+    message(sprintf("Loading cached breakpoints from %s", opts$cache_rds))
+    d <- cache$d
+  } else {
+    message(sprintf(
+      "Cache %s does not match the current tsv files, rebuilding it",
+      opts$cache_rds
+    ))
+  }
+}
+
+if (is.null(d)) {
   for (f in tsv_files) {
     message(sprintf("Processing %s", f))
     d_file <- novel_sites(f)
@@ -297,7 +336,7 @@ if (!is.null(opts$cache_rds) && file.exists(opts$cache_rds)) {
     d <- rbind(d, d_file)
   }
   if (!is.null(opts$cache_rds)) {
-    saveRDS(d, opts$cache_rds)
+    saveRDS(list(inputs = fingerprint, d = d), opts$cache_rds)
   }
 }
 
@@ -348,11 +387,13 @@ d_all <- d_all |>
 
 edf <- read.xlsx(opts$metadata)
 
-if (!("Expt.ID" %in% names(edf))) {
+missing_cols <- setdiff(c("Expt.ID", "mouse"), names(edf))
+if (length(missing_cols) > 0) {
   stop(
     sprintf(
-      "Metadata %s has no Expt.ID column; columns are: %s",
+      "Metadata %s lacks required column(s) %s; columns are: %s",
       opts$metadata,
+      paste(missing_cols, collapse = ", "),
       paste(names(edf), collapse = ", ")
     ),
     call. = FALSE
