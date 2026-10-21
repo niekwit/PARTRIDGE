@@ -1,3 +1,82 @@
+"""
+Collect the read evidence for each candidate insertion site of one sample
+(PARTRIDGE step 4), for manual validation in step 5 (README rules 1-5,
+e.g. BLAT of the clipped sequences to find the source IAP).
+
+Input
+-----
+--audit-xlsx  audit table from collect_insertions.R (step 3). Only rows whose
+              "mouse" column equals --sample are processed; this column holds
+              the sample's Expt.ID. Rows with mouse == "multi" (sites found in
+              more than one sample) never match and are skipped.
+--bam         coordinate-sorted, indexed BAM of that sample.
+--sample      the sample's Expt.ID.
+--output      gzipped text file to write (.fa.gz).
+
+Method
+------
+For each site ("name" = "seqname:first_bp", and "strand"):
+
+1. Clipped reads. Fetch all reads overlapping first_bp .. first_bp + 7
+   (1-based). The site is assumed to span first_bp .. first_bp + 6, i.e. a
+   6 bp target-site duplication; the real TSD length is not used. Keep reads
+   that are soft-clipped on exactly one side (reads clipped on both sides or
+   not at all are skipped):
+   - left-clipped reads: the clipped bases (before the alignment start) go to
+     LEFT_CLIP; for reverse-strand reads, the mate lies to the left, i.e.
+     inside the inserted element, so the read name is kept to find the mate.
+   - right-clipped reads: the clipped bases (after the alignment end) go to
+     RIGHT_CLIP; for forward-strand reads the mate lies to the right, inside
+     the element, and the read name is kept.
+   Clips are not required to be at the breakpoint or to match an LTR: any
+   one-sided clip overlapping the window is reported. Duplicate, secondary
+   and supplementary alignments are not filtered out.
+   Mates are dropped when the mate is itself one of the clipped reads at this
+   site, so a pair is not reported twice.
+
+2. Mates. The whole BAM is then read once (slow for large BAMs). The first
+   forward-strand record with a kept left-clip read name goes to LEFT_MATE,
+   the first reverse-strand record with a kept right-clip read name goes to
+   RIGHT_MATE. Mates that map inside the inserted IAP, elsewhere in the
+   genome (e.g. at the source copy) or not at all are all found this way.
+
+Output format
+-------------
+A non-standard text file (not valid FASTA), one block per site, in the order
+of the audit table:
+
+    @chr15:98805467-98805473 (-)
+    >RIGHT_CLIP
+    TGTTATTCGACGCGTTCTCACGACC...
+    TGTTATTCGACGCGTTCTCACGACCGGCCAGGAAGAACAC...
+    >LEFT_CLIP
+    >                    TATTTGTTTACCACTTAGAACACAGG
+    >CCATGGCCGAGCTGACGTT...TATTTGTTTACCACTTAGAACACAGG
+    >LEFT_MATE
+    ...
+    >RIGHT_MATE
+    ...
+
+- Header line "@seqname:start-end (strand)": start = first_bp from the audit
+  table, end = start + 6 (assumed TSD, see above), strand = orientation of
+  the inserted element.
+- ">RIGHT_CLIP": one clipped sequence per line, shortest first. The first
+  base of each line is the first base after the junction, so the lines are
+  aligned at their left end.
+- ">LEFT_CLIP": one clipped sequence per line, shortest first. Each line
+  starts with ">" and is left-padded with spaces so all lines end in the
+  same column, i.e. they are aligned at the junction (their right end).
+- ">LEFT_MATE" / ">RIGHT_MATE": full mate sequences, one per line, may be
+  empty.
+All sequences are on the reference forward strand, as stored in the BAM
+(not the orientation in which they were sequenced). There is no read name,
+UMI or quality information, and duplicate molecules appear as repeated
+lines.
+
+Note: a site without any left-clipped read makes the script fail
+(max() of an empty sequence) when writing the output.
+"""
+
 import argparse
 import gzip
 import os
