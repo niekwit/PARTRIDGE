@@ -66,6 +66,13 @@ Rule 5  Source LTR pair: the right-clip consensus followed directly by the
         both LTRs of one full-length element. "source" is the first
         candidate (span of both LTRs, 1-based), "source_candidates" lists
         all, "source_unique" says whether there is exactly one.
+        BLAT edges can lie a few bp inside the element (LTR bases matching
+        the genome at the insertion site are missing from the query; on the
+        test data the end is 31781570 instead of 31781572). With --rmsk, each
+        outer edge is moved to the edge of a RepeatMasker record within
+        --snap-max bp; "source_edges" says whether the edges come from
+        RepeatMasker ("rmsk") or BLAT. Exact edges matter for step 6, whose
+        junction windows are centred on them.
 
 possible_novel_insertion is TRUE when every evaluated rule passes;
 "failed_rules" and "rules_not_evaluated" say why it is not.
@@ -212,6 +219,12 @@ def parse_args():
     p.add_argument("--min-query-cov", type=float, default=0.9, help="rule 5")
     p.add_argument("--pair-min", type=int, default=2000, help="rule 5, bp")
     p.add_argument("--pair-max", type=int, default=8000, help="rule 5, bp")
+    p.add_argument(
+        "--snap-max",
+        type=int,
+        default=20,
+        help="rule 5: move source edges to RepeatMasker edges within N bp (0: off)",
+    )
     p.add_argument("--max-candidates", type=int, default=20, help="listed sources")
     args = p.parse_args()
     if len(args.bam) != len(args.sample):
@@ -559,6 +572,61 @@ def source_pairs(hits, args):
     return ok, sorted(pairs)
 
 
+def snap_to_repeats(pair, repeats, max_dist, min_inward=50):
+    """
+    Move the outer edges of a source pair to the nearest RepeatMasker edges.
+
+    BLAT edges can fall a few bp inside the element: LTR bases that match the
+    genome at the insertion site are aligned as genome there, so they are
+    missing from the clip query (the same microhomology that lengthens the
+    TSD). The left edge moves to the start of the record that starts within
+    max_dist bp of it and extends at least min_inward bp into the element;
+    the right edge likewise to a record's end. An edge without such a record
+    is kept.
+
+    Parameters
+    ----------
+    pair : tuple
+        (chrom, start, end, strand) from source_pairs(), 1-based inclusive.
+    repeats : dict of str to pandas.DataFrame or None
+        Output of read_repeats(); None leaves the pair unchanged.
+    max_dist : int
+        Largest edge shift in bp; 0 disables snapping.
+    min_inward : int
+        Minimum bp a record must extend into the element, so that a short
+        neighbouring repeat that merely touches the edge is not used.
+
+    Returns
+    -------
+    tuple
+        (pair with snapped edges, edge origin: "rmsk", "BLAT" or
+        "rmsk/BLAT" / "BLAT/rmsk" for left/right).
+    """
+    chrom, start, end, strand = pair
+    rep = repeats.get(chrom) if repeats is not None and max_dist > 0 else None
+    if rep is None:
+        return pair, "BLAT"
+    left = rep[
+        ((rep.start - (start - 1)).abs() <= max_dist)
+        & (rep.end >= start - 1 + min_inward)
+    ]
+    right = rep[((rep.end - end).abs() <= max_dist) & (rep.start <= end - min_inward)]
+    origin = []
+    if len(left):
+        start = int(left.loc[(left.start - (start - 1)).abs().idxmin(), "start"]) + 1
+        origin.append("rmsk")
+    else:
+        origin.append("BLAT")
+    if len(right):
+        end = int(right.loc[(right.end - end).abs().idxmin(), "end"])
+        origin.append("rmsk")
+    else:
+        origin.append("BLAT")
+    return (chrom, start, end, strand), (
+        origin[0] if origin[0] == origin[1] else "/".join(origin)
+    )
+
+
 def main():
     args = parse_args()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
@@ -649,6 +717,10 @@ def main():
 
     if queries:
         hits = run_blat(blat, args.blat_db or args.genome, queries, args.blat_args)
+        if repeats is not None:
+            # source elements can lie on chromosomes without a candidate site
+            loaded = set(audit["seqname"].astype(str))
+            repeats.update(read_repeats(args.rmsk, set(hits["tName"]) - loaded))
         for name, h in hits.groupby("qName"):
             ok, pairs = source_pairs(h, args)
             res = results[int(name)]
@@ -659,8 +731,11 @@ def main():
                 res["best_hit_query_cov"] = round(top.query_cov, 3)
             res["n_source_candidates"] = len(pairs)
             if pairs:
+                snapped = [snap_to_repeats(p, repeats, args.snap_max) for p in pairs]
+                pairs = [p for p, _ in snapped]
                 listed = [f"{c}:{s}-{e}({st})" for c, s, e, st in pairs]
                 res["source"] = f"{pairs[0][0]}:{pairs[0][1]}-{pairs[0][2]}"
+                res["source_edges"] = snapped[0][1]
                 res["source_candidates"] = ";".join(listed[: args.max_candidates])
                 res["source_unique"] = len(pairs) == 1
                 res["rule5_source_ltr_pair"] = True

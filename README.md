@@ -130,6 +130,13 @@ Use these rules to manually annotate novel insertion sites
 4.	There is a TSD of more than two bp and less than 30bp
 5.	Both LTR ends map to the same LTR in the reference genome (>93% sequence identity)- and this LTR is part of an LTR pair (2-8kb apart)
 
+These checks can be pre-screened automatically with `partridge/flag_novel_insertions.py`. It applies all five rules to every site in the audit table and writes the table back with one column per rule, a candidate `source` (with `--rmsk`, its edges are taken from RepeatMasker) and a `possible_novel_insertion` flag. No site is removed. The flag only prioritises the manual review below, it does not replace it. Rule 5 needs [BLAT](https://genome.ucsc.edu/goldenPath/help/blatSpec.html) (`bioconda::blat`, in [environment.yaml](environment.yaml)); a `.2bit` genome passed with `--blat-db` is much faster than FASTA. Rule 2 needs a RepeatMasker annotation, e.g. UCSC `rmsk.txt.gz`.
+```{bash}
+python partridge/flag_novel_insertions.py --audit-xlsx isa.audit.xlsx --bam [bam] --sample [Expt.ID] \
+  --genome mm39.fa --blat-db mm39.2bit --rmsk rmsk.txt.gz --output isa.audit.flagged.xlsx
+```
+See the docstring at the top of the script for how each rule is evaluated and for all options.
+
 Some information needed for this annotation can be found in the non-standard fasta files:
 
 Practically, start with the file "isa.audit.xlsx" and generate columns to indicate passing of filtering and also a column indicating if the source IAP could be uniquely identified.
@@ -213,14 +220,28 @@ manually validate novel insertions. There is only one in this test data, `chr15:
 5.	**Both LTR ends map to the same LTR in the reference genome (>93% sequence identity)- and this LTR is part of an LTR pair (2-8kb apart)** -> for this we use UCSC Blat and paste both ends RIGHT_CLIP and LEFT_CLIP immediately after each other. This reveales a 99% sequence identical hit in chr6:31776305-31776668 and chr6:31781207-31781570 which upon close inspection are both ends of an IAPEz immediately downstream of Gm43156.
 
 
-since we now are sure that this is a genuine IAP insertion, open the file test_data/isa.audit.txt and add a new column "classification", then add "TRUE" to that column at the just verified insertion as well as a column "source" and add "chr6:31776305-31781572".
+The same checks can be run automatically (needs the mm39 genome and its RepeatMasker annotation):
+```
+python partridge/flag_novel_insertions.py --audit-xlsx test_data/isa.audit.xlsx --bam test_data/test.bam --sample test \
+  --genome mm39.fa --blat-db mm39.2bit --rmsk rmsk.txt.gz --output test_data/isa.audit.flagged.xlsx
+```
+This passes all five rules and flags the site as a possible novel insertion, with source `chr6:31776305-31781572`, the element found by the manual BLAT search above (check `source_unique` and `source_candidates` for other equally good sources). Its TSD is reported as 7 bp, `AGGAGGC` (chr15:98805467-98805473): the script takes the TSD from where the clipped reads meet the genome, and one base at the LTR terminus that matches the genome is counted as part of the TSD.
+
+since we now are sure that this is a genuine IAP insertion, open the file test_data/isa.audit.xlsx and add a new column "classification", then add "TRUE" to that column at the just verified insertion as well as a column "source" and add "chr6:31776305-31781572".
 
 ## Step 6
-run `Rscript scripts/06_cluster_source_coverage.R`, this takes about 1 second on a local computer.
+Count the coverage of the source virus, then calculate the allelic frequency:
+```
+Rscript scripts/cluster_source_coverage.R --bam test_data/test.bam --audit-xlsx test_data/isa.audit.xlsx \
+  --output-xlsx test_data/isa.audit.source_coverage.xlsx
+Rscript partridge/calculate_vaf.R --insertions test_data/isa_hmmer2_out.xlsx \
+  --source-coverage test_data/isa.audit.source_coverage.xlsx --output test_data/isa.vaf.xlsx
+```
+Each takes about 1 second on a local computer. The first generates a file `isa.audit.source_coverage.xlsx` containing the coverage of the source virus, the second `isa.vaf.xlsx` with the allelic frequency and its exact 95% confidence interval.
 
-This will generate a file `isa.audit.source_coverage.xlsx` containing the coverage of the source virus for this file.
+The source coverage for `chr6:31776305-31781572` is 191 (file isa.audit.source_coverage.xlsx), whereas the coverage of the novel insertion is 6 (file isa_hmmer2_out.xlsx), thus the estimated allelic frequency of the novel insertion is 6/191 = 3.1% (95% CI 1.1-7.0%).
 
-The allelic frequency can now be calculated: The source coverage for `chr6:31776305-31781572` is 287 (file isa.audit.source_coverage), whereas the coverage of the novel insertion is 6 (file isa_hmmer2_out.xlsx), thus the estimated allelic frequency of the novel insertion is 6/287 = 2.1%
+Note: the original `scripts/06_cluster_source_coverage.R` reports a source coverage of 287 (6/287 = 2.1%). Its window at the 5' edge of the source lies entirely inside the 5' LTR, so it never tests that junction; see the header of `scripts/cluster_source_coverage.R` for details.
 
 
 ## License
