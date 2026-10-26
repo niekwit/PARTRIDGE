@@ -29,15 +29,17 @@ For each site ("name" = "seqname:first_bp", and "strand"):
      RIGHT_CLIP; for forward-strand reads the mate lies to the right, inside
      the element, and the read name is kept.
    Clips are not required to be at the breakpoint or to match an LTR: any
-   one-sided clip overlapping the window is reported. Duplicate, secondary
-   and supplementary alignments are not filtered out.
+   one-sided clip overlapping the window is reported. Unmapped reads (placed
+   at their mate's position) and records without a stored sequence are
+   skipped; duplicate, secondary and supplementary alignments are not
+   filtered out.
    Mates are dropped when the mate is itself one of the clipped reads at this
    site, so a pair is not reported twice.
 
 2. Mates. The whole BAM is then read once (slow for large BAMs). The first
    forward-strand record with a kept left-clip read name goes to LEFT_MATE,
    the first reverse-strand record with a kept right-clip read name goes to
-   RIGHT_MATE. Mates that map inside the inserted IAP, elsewhere in the
+   RIGHT_MATE (records without a stored sequence are skipped). Mates that map inside the inserted IAP, elsewhere in the
    genome (e.g. at the source copy) or not at all are all found this way.
 
 Output format
@@ -67,14 +69,12 @@ of the audit table:
   starts with ">" and is left-padded with spaces so all lines end in the
   same column, i.e. they are aligned at the junction (their right end).
 - ">LEFT_MATE" / ">RIGHT_MATE": full mate sequences, one per line, may be
-  empty.
+  empty. Any section can be empty, e.g. ">LEFT_CLIP" at a site without
+  left-clipped reads.
 All sequences are on the reference forward strand, as stored in the BAM
 (not the orientation in which they were sequenced). There is no read name,
 UMI or quality information, and duplicate molecules appear as repeated
 lines.
-
-Note: a site without any left-clipped read makes the script fail
-(max() of an empty sequence) when writing the output.
 """
 
 import argparse
@@ -162,6 +162,9 @@ with AlignmentFile(PATH_TO_BAM, mode="rb") as af:
         bp = Breakpoint(seqname, pos, pos + 6, strand)
         print(str(bp))
         for r in af.fetch(seqname, pos - 1, pos + 7):
+            # unmapped reads placed at their mate's position have no CIGAR
+            if r.is_unmapped or r.query_sequence is None:
+                continue
             p = 0
             lclip = 0
             rclip = 0
@@ -212,6 +215,9 @@ with AlignmentFile(PATH_TO_BAM, mode="rb") as af:
     print(f"finding mates")
     af.reset()
     for r in af:
+        # e.g. secondary records without SEQ; wait for one that has it
+        if r.query_sequence is None:
+            continue
         if r.is_reverse:
             for bp in bps:
                 if r.query_name in bp.right_mates:
@@ -229,7 +235,7 @@ with AlignmentFile(PATH_TO_BAM, mode="rb") as af:
             for seq in bp.right_clip:
                 opt.write(f"{seq}\n")
             opt.write(f">LEFT_CLIP\n")
-            rmaxlen = max(len(seq) for seq in bp.left_clip)
+            rmaxlen = max((len(seq) for seq in bp.left_clip), default=0)
             for seq in bp.left_clip:
                 opt.write(f">{' '*(rmaxlen-len(seq)) + seq}\n")
             opt.write(f">LEFT_MATE\n")

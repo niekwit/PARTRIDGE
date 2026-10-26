@@ -16,6 +16,7 @@ dependencies:
   - bioconda::bwa-mem2=2.3
   - bioconda::minimap2=2.28
   - bioconda::bedtools=2.31.1
+  - bioconda::blat=36
   - pip:
       - biopython==1.87
       - et_xmlfile==2.0.0
